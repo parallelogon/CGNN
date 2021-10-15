@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.optim as optim
 from scipy.spatial import distance_matrix
+import torch
 
 
 """
@@ -208,6 +209,9 @@ class REGNN(nn.Module):
 def loss(Hh, P, mu):
     return -capacity(Hh, P).mean() + mu*P.mean()
 
+# reformulated as a pure minimization problem with constraint mu
+def loss_constrined(H,P,mu, P_MAX):
+    return -capacity(H,P).mean() + mu.T @ (P.mean(axis = 0) - P_MAX)
 
 net.pathloss_matrix(d0, gamma)
 
@@ -223,14 +227,17 @@ LR = 0.05  # learning rate
 EPOCHS = 10
 N_REALIZATIONS = 10**4  # number of samples total per epoch
 N_BATCHES = N_REALIZATIONS//BATCHSIZE
-MU = 0.01  # penalty on total power allocated
+MU = 0.01 #torch.tensor([0.01])  # penalty on total power allocated
 LOSS_TRAIN = []
-
+P_MAX = 10e-3*torch.ones(net.n,1)
+mu = torch.zeros(net.n,1, requires_grad=True)
 # Initalize the network
 net = Net(wx, wy, wc, rho).pathloss_matrix(d0, gamma)
 
-# Use adam optimizer with base values for betas
-optimizer = optim.Adam(filter.parameters(), LR)
+# Use adam optimizer with base values for betas, two different steps one for the 
+# original problem and one for the constraints
+optimizerPrimal = optim.Adam(filter.parameters(), LR)
+optimizerDual = optim.Adam([mu], LR/5)
 
 for epoch in range(EPOCHS):
     print("")
@@ -254,13 +261,19 @@ for epoch in range(EPOCHS):
         P = filter(H, P)
 
         # loss value
-        lval = loss(H, P, MU)
+        #lval = loss(H, P, MU)
+        lval = loss_constrined(H, P, mu, P_MAX)
 
         # deriv
         lval.backward()
 
-        # optimize
-        optimizer.step()
+        # optimize step
+        optimizerPrimal.step()
+        optimizerDual.step()
+
+        # clamp mu values
+        with torch.no_grad():
+            mu = mu.clamp(min = 0)
 
         # track
         LOSS_TRAIN += [lval.item()]
@@ -268,6 +281,7 @@ for epoch in range(EPOCHS):
         if batch % 20 == 0:
             print("\t Filter: %6.4f [T]" % lval)
 print("")
+
 
 fig1 = plt.figure()
 plt.plot(LOSS_TRAIN)
