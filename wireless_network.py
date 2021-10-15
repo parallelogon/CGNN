@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from scipy.spatial import distance_matrix
 import torch
-
+from copy import deepcopy
 
 """
  Channel class, this is a test class for a later implementation.
@@ -223,21 +223,30 @@ H = net.sample(s, BATCHSIZE).samples
 filter = REGNN(K, F, nn.ReLU())
 
 # Hyperparameters
-LR = 0.05  # learning rate
+LR = 0.01  # learning rate
 EPOCHS = 10
-N_REALIZATIONS = 10**4  # number of samples total per epoch
+N_REALIZATIONS = 10**4 # number of samples total per epoch
 N_BATCHES = N_REALIZATIONS//BATCHSIZE
 MU = 0.01 #torch.tensor([0.01])  # penalty on total power allocated
 LOSS_TRAIN = []
+LOSS_VALID = []
+
 P_MAX = 10e-3*torch.ones(net.n,1)
-mu = torch.zeros(net.n,1, requires_grad=True)
+mu = torch.zeros(net.n, 1)
+mu.requires_grad = True
+
 # Initalize the network
 net = Net(wx, wy, wc, rho).pathloss_matrix(d0, gamma)
+val_net = Net(wx//2, wy//2, wc//2, rho)
+val_net.pathloss_matrix(d0, gamma)
 
 # Use adam optimizer with base values for betas, two different steps one for the 
 # original problem and one for the constraints
 optimizerPrimal = optim.Adam(filter.parameters(), LR)
-optimizerDual = optim.Adam([mu], LR/5)
+optimizerDual = optim.Adam([mu], LR/10)
+
+best_model = []
+last_model = []
 
 for epoch in range(EPOCHS):
     print("")
@@ -279,10 +288,37 @@ for epoch in range(EPOCHS):
         LOSS_TRAIN += [lval.item()]
 
         if batch % 20 == 0:
-            print("\t Filter: %6.4f [T]" % lval)
+            # validate the model
+            H = val_net.sample(s,BATCHSIZE//2).samples
+            P = torch.ones(BATCHSIZE//2, val_net.n, 1)
+            P = filter(H,P)
+            lval_valid = capacity(H, P).mean().item()
+            
+            if len(LOSS_VALID) == 0:
+                best_model = deepcopy(filter)
+
+            elif lval_valid > max(LOSS_VALID):
+                best_model = deepcopy(filter)
+
+            LOSS_VALID.append(lval_valid)
+
+            print("\t Filter: %6.4f [T]" % (
+                    lval.item()) + " %6.4f [V]" % (
+                    lval_valid))
 print("")
 
-
-fig1 = plt.figure()
+fig= plt.plot()
 plt.plot(LOSS_TRAIN)
+
 plt.show()
+
+def test_net(net, filter, s, Q):
+    H =net.sample(s, Q).samples
+    P = torch.ones(BATCHSIZE, net.n, 1)
+    P = filter(H,P)
+    return(capacity(H, P).mean())
+
+test_score_last = test_net(net, filter, s, BATCHSIZE)
+test_score_best = test_net(net, best_model, s, BATCHSIZE)
+
+print("Final Score: %6.4f (last)" % (test_score_last) + " %6.4f (best)" % test_score_best)
